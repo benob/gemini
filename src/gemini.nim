@@ -1,4 +1,11 @@
-import asyncnet, asyncdispatch, net, uri, openssl, random
+import asyncdispatch
+import asyncnet
+import net
+import openssl
+import random
+#import streams
+import strutils
+import uri
 
 type Status* = enum
   Input = 10
@@ -20,11 +27,72 @@ type Status* = enum
   CertificateUnauthorized = 61
   CertificateNotValid = 62
 
+type GeminiError* = object of IOError
+
+when not defined(ssl):
+  static:
+    raise newException(GeminiError, "SSL support is not available. Compile with -d:ssl to enable.")
+
+type GeminiClient* = ref object
+  socket: AsyncSocket
+  sslContext: SSLContext
+  bodyStream: FutureStream[string]
+  maxRedirects: Natural
+
+type Response* = ref object
+  status*: Status
+  meta*: string
+  client: GeminiClient
+
+proc newGeminiClient*(maxRedirects = 5): GeminiClient =
+  result = GeminiClient(maxRedirects: maxRedirects)
+  result.sslContext = newContext(verifyMode = CVerifyNone)
+
+proc loadUrl(client: GeminiClient, url: string): Future[Response] {.async, gcsafe.} =
+  result = Response(client: client)
+  result.client = client
+  let uri = parseUri(url)
+  let port = if uri.port == "": Port(1965) else: Port(parseInt(uri.port))
+  if uri.scheme != "gemini":
+    raise newException(GeminiError, url & ": scheme not supported")
+  client.socket = await asyncnet.dial(uri.hostname, port)
+  client.sslContext.wrapConnectedSocket(client.socket, handshakeAsClient, uri.hostname)
+  await client.socket.send(url & "\r\n")
+  let line = await client.socket.recvLine()
+  if line[2] != ' ':
+    raise newException(GeminiError, "unexpected response format")
+  result.status = parseInt(line[0..1]).Status
+  result.meta = line[3..^1]
+
+  if result.status.int >= 30:
+    client.socket.close()
+
+proc request*(client: GeminiClient, url: string): Future[Response] {.async, gcsafe.} =
+  result = await client.loadUrl(url)
+  for i in 1..client.maxRedirects:
+    if result.status == Redirect or result.status == TempRedirect:
+      result = await client.loadUrl(result.meta)
+    else:
+      return
+  raise newException(GeminiError, "too many redirects")
+
+proc body*(response: Response): Future[string] {.async, gcsafe.} =
+  let client = response.client
+  client.bodyStream = newFutureStream[string]("body")
+  while not client.socket.isClosed():
+    let data = await client.socket.recv(net.BufferSize)
+    if data == "":
+      client.socket.close()
+      break # We've been disconnected.
+    await client.bodyStream.write(data)
+  client.bodyStream.complete()
+  return await client.bodyStream.readAll()
+
 type GeminiServer* = ref object
   socket: AsyncSocket
   reuseAddr: bool
   reusePort: bool
-  ctx: SSLContext
+  sslContext: SSLContext
 
 type Request* = object
   url: Uri
@@ -41,7 +109,7 @@ proc respond*(req: Request, status: Status, meta: string, body: string = "") {.a
     echo getCurrentExceptionMsg()
 
 proc processClient(server: GeminiServer, client: AsyncSocket, callback: proc (request: Request): Future[void] {.closure, gcsafe.}) {.async.} =
-  server.ctx.wrapConnectedSocket(client, handshakeAsServer)
+  server.sslContext.wrapConnectedSocket(client, handshakeAsServer)
   let line = await client.recvLine()
   if line.len > 0:
     var req = Request(url: parseUri(line), client: client) 
@@ -54,25 +122,26 @@ proc processClient(server: GeminiServer, client: AsyncSocket, callback: proc (re
 
 proc newGeminiServer*(reuseAddr = true; reusePort = false, certFile = "", keyFile = ""): GeminiServer =
   result = GeminiServer(reuseAddr: reuseAddr, reusePort: reusePort)
-  result.ctx = newContext(certFile = certFile, keyFile = keyFile)
+  result.sslContext = newContext(certFile = certFile, keyFile = keyFile)
   
-proc SSL_CTX_set_session_id_context(ctx: SslCtx, id: string, idLen: int) {.importc, dynlib: DLLSSLName}
+# copied from geminim
+proc SSL_CTX_set_session_id_context(sslContext: SslCtx, id: string, idLen: int) {.importc, dynlib: DLLSSLName}
 
-proc sslSetSessionIdContext(ctx: SslContext, id: string = "") =
-  SSL_CTX_set_session_id_context(ctx.context, id, id.len)
+proc sslSetSessionIdContext(sslContext: SslContext, id: string = "") =
+  SSL_CTX_set_session_id_context(sslContext.context, id, id.len)
 
-proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Request): Future[void] {.closure, gcsafe.}, address = "", family = IpAddressFamily.IPv4) {.async.} =
-  if family == IpAddressFamily.IPv6:
+proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Request): Future[void] {.closure, gcsafe.}, address = "") {.async.} =
+  if address.find(":") >= 0:
     server.socket = newAsyncSocket(domain = AF_INET6)
   else:
     server.socket = newAsyncSocket(domain = AF_INET)
-  server.ctx.wrapSocket(server.socket)
+  server.sslContext.wrapSocket(server.socket)
   server.socket.setSockOpt(OptReuseAddr, server.reuseAddr)
   server.socket.setSockOpt(OptReusePort, server.reusePort)
   server.socket.bindAddr(port, address)
-  server.ctx.wrapSocket(server.socket)
+  server.sslContext.wrapSocket(server.socket)
   # note: this is to prevent crash from opening with https browser
-  server.ctx.sslSetSessionIdContext(id = $rand(1000000)) 
+  server.sslContext.sslSetSessionIdContext(id = $rand(1000000)) 
   server.socket.listen()
 
   while true:
@@ -82,10 +151,3 @@ proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Re
     except:
       echo getCurrentExceptionMsg()
 
-when isMainModule:
-  proc cb(req: Request) {.async, gcsafe.} =
-    await req.respond(Success, "text/plain", "Hello world")
-
-  var server = newGeminiServer(certFile = "fullchain.pem", keyFile = "privkey.pem")
-  waitFor server.serve(Port(1965), cb, family = IpAddressFamily.IPv6)
-  #waitFor server.serve(Port(1965), cb)

@@ -3,7 +3,6 @@ import asyncnet
 import net
 import openssl
 import random
-#import streams
 import strutils
 import uri
 

@@ -94,7 +94,7 @@ type GeminiServer* = ref object
   sslContext: SSLContext
 
 type Request* = object
-  url: Uri
+  url*: Uri
   client: AsyncSocket
 
 proc respond*(req: Request, status: Status, meta: string, body: string = "") {.async, gcsafe.} =

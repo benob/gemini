@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "Benoit Favre"
 description   = "Building blocks for making async Gemini servers"
 license       = "MIT"

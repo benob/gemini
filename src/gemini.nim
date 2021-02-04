@@ -146,7 +146,7 @@ proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Re
   while true:
     try:
       let client = await server.socket.accept()
-      asyncCheck server.processClient(client, callback)
+      await server.processClient(client, callback)
     except:
       echo getCurrentExceptionMsg()
 

@@ -16,7 +16,7 @@ import asyncdispatch
 import gemini
 
 proc handle(req: Request) {.async, gcsafe.} =
-  await req.respond(Success, "text/plain", "Hello world")
+  await req.respond(Success, "text/gemini", "# Hello world")
 
 var server = newGeminiServer(certFile = "fullchain.pem", keyFile = "privkey.pem")
 waitFor server.serve(Port(1965), handle)
@@ -58,6 +58,8 @@ proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Re
 
 The callback is given a request which contains the url the client is requesting.
 Note that when address contains a column, ":" the code assumes that you are specifying an IPv6 address (such as :: or ::1 which correspond to 0.0.0.0 and 127.0.0.1). 
+One Linux hosts, IPv4 requests are automatically mapped to IPv6 when listening to "::".
+If the request url cannot be parsed, the server replies with status 50 INTERNAL ERROR.
 
 Use respond() to send back a response:
 ```
@@ -89,8 +91,10 @@ type Status* = enum
 
 To create a new client:
 ```
-proc newGeminiClient*(maxRedirects = 5): GeminiClient
+proc newGeminiClient*(maxRedirects = 5, verifyMode = CVerifyNone): GeminiClient
 ```
+By default, certificates are not verified because Nim's implementation rejects self-signed certificates.
+To force verification, use `verifyMode=CVerifyPeer`.
 
 Then you can submit a request to a "gemini://" url
 ```
@@ -110,10 +114,12 @@ If an exception occurs such as a protocol error, you will get a GeminiError exce
 Warning
 -------
 
-The SSL implementation in NIM is not well tested, it may contain vulnerabilities.
+The TLS implementation in Nim is not well tested, it may contain vulnerabilities.
+Note that the current code is too permissive and accepts SSL2/SSL3 handshakes.
 
-Known Bugs
-----------
+Todo
+----
 
-Connecting with telnet as a client crashes the server with an SSL error
-
+[ ] Handle client certificates
+[ ] Trust self-signed certificates
+[ ] Parse text/gemini

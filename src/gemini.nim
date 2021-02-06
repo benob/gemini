@@ -98,37 +98,34 @@ type Request* = object
   client: AsyncSocket
 
 proc respond*(req: Request, status: Status, meta: string, body: string = "") {.async, gcsafe.} =
-  assert meta.len <= 1024
   try:
+    assert meta.len <= 1024
     await req.client.send($status.int & ' ' & meta & "\r\n")
     if status == Success:
       await req.client.send(body)
   except:
-    await req.client.send("40 INTERNAL ERROR\r\n")
     echo getCurrentExceptionMsg()
+    await req.client.send($Error.int & " INTERNAL ERROR\r\n")
 
 proc processClient(server: GeminiServer, client: AsyncSocket, callback: proc (request: Request): Future[void] {.closure, gcsafe.}) {.async.} =
-  server.sslContext.wrapConnectedSocket(client, handshakeAsServer)
-  let line = await client.recvLine()
-  if line.len > 0:
-    var req = Request(url: parseUri(line), client: client) 
-    try:
-      await callback(req)
-    except:
-      await client.send("40 INTERNAL ERROR\r\n")
-      echo getCurrentExceptionMsg()
+  try:
+    server.sslContext.wrapConnectedSocket(client, handshakeAsServer)
+    let line = await client.recvLine()
+    if line.len > 0:
+      var req = Request(url: parseUri(line), client: client) 
+      try:
+        await callback(req)
+      except:
+        echo getCurrentExceptionMsg()
+        await client.send($Error.int & " INTERNAL ERROR\r\n")
+  except:
+    echo getCurrentExceptionMsg()
   client.close()
 
 proc newGeminiServer*(reuseAddr = true; reusePort = false, certFile = "", keyFile = ""): GeminiServer =
   result = GeminiServer(reuseAddr: reuseAddr, reusePort: reusePort)
   result.sslContext = newContext(certFile = certFile, keyFile = keyFile)
   
-# copied from geminim
-proc SSL_CTX_set_session_id_context(sslContext: SslCtx, id: string, idLen: int) {.importc, dynlib: DLLSSLName}
-
-proc sslSetSessionIdContext(sslContext: SslContext, id: string = "") =
-  SSL_CTX_set_session_id_context(sslContext.context, id, id.len)
-
 proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Request): Future[void] {.closure, gcsafe.}, address = "") {.async.} =
   if address.find(":") >= 0:
     server.socket = newAsyncSocket(domain = AF_INET6)
@@ -139,14 +136,13 @@ proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Re
   server.socket.setSockOpt(OptReusePort, server.reusePort)
   server.socket.bindAddr(port, address)
   server.sslContext.wrapSocket(server.socket)
-  # note: this is to prevent crash from opening with https browser
-  server.sslContext.sslSetSessionIdContext(id = $rand(1000000)) 
   server.socket.listen()
 
   while true:
+    var client: AsyncSocket
     try:
-      let client = await server.socket.accept()
-      await server.processClient(client, callback)
+      client = await server.socket.accept()
     except:
       echo getCurrentExceptionMsg()
+    asyncCheck server.processClient(client, callback)
 

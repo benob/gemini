@@ -1,10 +1,16 @@
 import asyncdispatch
-import asyncnet
+#import asyncnet
 import net
-import openssl
+#import openssl
 import random
+import nimcrypto
 import strutils
 import uri
+import tls # temporary fix for missing api in asyncnet
+
+export tls.`$`
+export tls.commonName
+export tls.fingerprint
 
 type Status* = enum
   ## See https://gemini.circumlunar.space/docs/specification.html for documentation
@@ -42,26 +48,58 @@ type GeminiClient* = ref object
 type Response* = ref object
   status*: Status
   meta*: string
+  certificate*: PX509
+  verification: int
   client: GeminiClient
 
-proc newGeminiClient*(maxRedirects = 5, verifyMode = CVerifyNone): GeminiClient =
-  ## verifyMode defaults to NOT checking certificates
-  ## use CVerifyPeer to force checking -- in that mode, self-signed certificates are not trusted
+proc isSelfSigned*(response: Response): bool =
+  return response.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or response.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+
+proc isVerified*(response: Response): bool =
+  return response.verification == X509_V_OK
+
+proc hasCertificate*(response: Response): bool = not response.certificate.isNil
+
+proc loadIdentityFile*(client: GeminiClient; certFile, keyFile: string): bool =
+  ## load a pair of certificate/key files in PEM format to be offered to the server
+  ## to be used before connecting
+  if client.sslContext.context.SSL_CTX_use_certificate_file(certFile, SSL_FILETYPE_PEM) != 1:
+    return false
+  if client.sslContext.context.SSL_CTX_use_PrivateKey_file(keyFile, SSL_FILETYPE_PEM) != 1:
+    return false
+  if client.sslContext.context.SSL_CTX_check_private_key() != 1:
+    return false
+  return true
+
+proc newGeminiClient*(maxRedirects = 5, certFile = "", keyFile = ""): GeminiClient =
+  ## optionally, a certificate-based identity can be offered to the server
   result = GeminiClient(maxRedirects: maxRedirects)
-  result.sslContext = newContext(verifyMode = verifyMode)
+  result.sslContext = newContext()
+  # force use of custom verify_callback to allow for self-signed certificates
+  result.sslContext.context.SSL_CTX_set_verify(SslVerifyPeer, verify_callback)
+  if certFile != "" and keyFile != "":
+    if not result.loadIdentityFile(certFile, keyFile):
+      raise newException(GeminiError, "Failed to load certificate files.")
 
 proc loadUrl(client: GeminiClient, url: string): Future[Response] {.async, gcsafe.} =
   result = Response(client: client)
-  result.client = client
   let uri = parseUri(url)
   let port = if uri.port == "": Port(1965) else: Port(parseInt(uri.port))
   if uri.scheme != "gemini":
     raise newException(GeminiError, url & ": scheme not supported")
-  client.socket = await asyncnet.dial(uri.hostname, port)
+  
+  client.socket = await tls.dial(uri.hostname, port)
   client.sslContext.wrapConnectedSocket(client.socket, handshakeAsClient, uri.hostname)
+  
+  # send data now to force TLS handshake to complete
   await client.socket.send(url & "\r\n")
+
+  let handle = client.socket.getSslHandle()
+  result.certificate = handle.SSL_get_peer_certificate()
+  result.verification = handle.SSL_get_verify_result()
+
   let line = await client.socket.recvLine()
-  if line[2] != ' ':
+  if line.len < 3 or line[2] != ' ':
     raise newException(GeminiError, "unexpected response format")
   result.status = parseInt(line[0..1]).Status
   result.meta = line[3..^1]
@@ -108,7 +146,17 @@ type Request* = object
   ## Request from a client.
   ## The url can be used to handle virtual hosts resource and query parameters
   url*: Uri
+  certificate*: PX509
+  verification: int
   client: AsyncSocket
+
+proc isSelfSigned*(request: Request): bool =
+  return request.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or request.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+
+proc isVerified*(request: Request): bool =
+  return request.verification == X509_V_OK
+
+proc hasCertificate*(request: Request): bool = not request.certificate.isNil
 
 proc respond*(req: Request, status: Status, meta: string, body: string = "") {.async, gcsafe.} =
   ## Sends data back to a client as per the gemini protocol
@@ -125,9 +173,14 @@ proc respond*(req: Request, status: Status, meta: string, body: string = "") {.a
 proc processClient(server: GeminiServer, client: AsyncSocket, callback: proc (request: Request): Future[void] {.closure, gcsafe.}) {.async.} =
   try:
     server.sslContext.wrapConnectedSocket(client, handshakeAsServer)
+
     let line = await client.recvLine()
     if line.len > 0:
-      var req = Request(url: parseUri(line), client: client) 
+      let 
+        handle = client.getSslHandle()
+        certificate = handle.SSL_get_peer_certificate()
+        verification = handle.SSL_get_verify_result()
+      var req = Request(url: parseUri(line), client: client, certificate: certificate, verification: verification)
       try:
         await callback(req)
       except:
@@ -137,15 +190,24 @@ proc processClient(server: GeminiServer, client: AsyncSocket, callback: proc (re
     echo getCurrentExceptionMsg()
   client.close()
 
-proc newGeminiServer*(reuseAddr = true; reusePort = false, certFile = "", keyFile = ""): GeminiServer =
+proc newGeminiServer*(reuseAddr = true; reusePort = false, certFile = "", keyFile = "", sessionId = ""): GeminiServer =
   ## Creates a new server, certFile and keyFile are used to handle the TLS handshake
+  ## If a sessionId is not provided it is generated randomly and is used by TLS to resume sessions
   result = GeminiServer(reuseAddr: reuseAddr, reusePort: reusePort)
   result.sslContext = newContext(certFile = certFile, keyFile = keyFile)
+  # use custom verify_callback to allow for self-signed certificates
+  result.sslContext.context.SSL_CTX_set_verify(SslVerifyPeer, verify_callback)
+  var sessionId = sessionId
+  if sessionId == "":
+    sessionId = newString(32)
+    randomize()
+    discard randomBytes(sessionId)
+  result.sslContext.sessionIdContext = sessionId
   
 proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Request): Future[void] {.closure, gcsafe.}, address = "") {.async.} =
   ## Starts serving requests. Each request is passed to the callback for processing
   ## If the listening addres contains ":", it is assumed to be IPv6
-  ## Linux implementations map IPv4 requests to IPV6 if needed
+  ## Linux maps IPv4 requests to IPV6 if needed
   if address.find(":") >= 0:
     server.socket = newAsyncSocket(domain = AF_INET6)
   else:
@@ -154,7 +216,6 @@ proc serve*(server: GeminiServer, port = Port(1965), callback: proc (request: Re
   server.socket.setSockOpt(OptReuseAddr, server.reuseAddr)
   server.socket.setSockOpt(OptReusePort, server.reusePort)
   server.socket.bindAddr(port, address)
-  server.sslContext.wrapSocket(server.socket)
   server.socket.listen()
 
   while true:

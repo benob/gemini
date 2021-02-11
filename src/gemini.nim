@@ -53,9 +53,11 @@ type Response* = ref object
   client: GeminiClient
 
 proc isSelfSigned*(response: Response): bool =
+  ## is true when the certificate is self-signed
   return response.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or response.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
 
 proc isVerified*(response: Response): bool =
+  ## is true when the certificate chain is verified up to a known root certificate
   return response.verification == X509_V_OK
 
 proc hasCertificate*(response: Response): bool = not response.certificate.isNil
@@ -151,9 +153,11 @@ type Request* = object
   client: AsyncSocket
 
 proc isSelfSigned*(request: Request): bool =
+  ## is true when the certificate is self-signed
   return request.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or request.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
 
 proc isVerified*(request: Request): bool =
+  ## is true when the certificate chain is verified up to a known root certificate
   return request.verification == X509_V_OK
 
 proc hasCertificate*(request: Request): bool = not request.certificate.isNil

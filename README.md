@@ -131,6 +131,7 @@ Note that the current code is too permissive and accepts SSL2/SSL3 handshakes.
 Todo
 ----
 
-[x] Handle client certificates
-[x] Trust self-signed certificates
-[ ] Parse text/gemini
+- [x] Handle client certificates
+- [x] Trust self-signed certificates
+- [ ] Non-async interface
+- [ ] Parse text/gemini

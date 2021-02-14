@@ -6,11 +6,11 @@ import random
 import nimcrypto
 import strutils
 import uri
-import tls # temporary fix for missing api in asyncnet
+import gemini/patched_asyncnet # temporary fix for missing api in asyncnet
 
-export tls.`$`
-export tls.commonName
-export tls.fingerprint
+export patched_asyncnet.`$`
+export patched_asyncnet.commonName
+export patched_asyncnet.fingerprint
 
 type Status* = enum
   ## See https://gemini.circumlunar.space/docs/specification.html for documentation
@@ -52,15 +52,15 @@ type Response* = ref object
   verification: int
   client: GeminiClient
 
-proc isSelfSigned*(response: Response): bool =
-  ## is true when the certificate is self-signed
-  return response.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or response.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+#proc isSelfSigned*(response: Response): bool =
+#  ## is true when the certificate is self-signed
+#  return response.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or response.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
 
-proc isVerified*(response: Response): bool =
-  ## is true when the certificate chain is verified up to a known root certificate
-  return response.verification == X509_V_OK
+#proc isVerified*(response: Response): bool =
+#  ## is true when the certificate chain is verified up to a known root certificate
+#  return response.verification == X509_V_OK
 
-proc hasCertificate*(response: Response): bool = not response.certificate.isNil
+#proc hasCertificate*(response: Response): bool = not response.certificate.isNil
 
 proc loadIdentityFile*(client: GeminiClient; certFile, keyFile: string): bool =
   ## load a pair of certificate/key files in PEM format to be offered to the server
@@ -90,7 +90,7 @@ proc loadUrl(client: GeminiClient, url: string): Future[Response] {.async, gcsaf
   if uri.scheme != "gemini":
     raise newException(GeminiError, url & ": scheme not supported")
   
-  client.socket = await tls.dial(uri.hostname, port)
+  client.socket = await patched_asyncnet.dial(uri.hostname, port)
   client.sslContext.wrapConnectedSocket(client.socket, handshakeAsClient, uri.hostname)
   
   # send data now to force TLS handshake to complete
@@ -152,15 +152,15 @@ type Request* = object
   verification: int
   client: AsyncSocket
 
-proc isSelfSigned*(request: Request): bool =
+proc isSelfSigned*(transaction: Request | Response): bool =
   ## is true when the certificate is self-signed
-  return request.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or request.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
+  return transaction.verification == X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT or transaction.verification == X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN
 
-proc isVerified*(request: Request): bool =
+proc isVerified*(transaction: Request | Response): bool =
   ## is true when the certificate chain is verified up to a known root certificate
-  return request.verification == X509_V_OK
+  return transaction.verification == X509_V_OK
 
-proc hasCertificate*(request: Request): bool = not request.certificate.isNil
+proc hasCertificate*(transaction: Request | Response): bool = not transaction.certificate.isNil
 
 proc respond*(req: Request, status: Status, meta: string, body: string = "") {.async, gcsafe.} =
   ## Sends data back to a client as per the gemini protocol

@@ -1,8 +1,8 @@
 # Package
 
-version       = "0.1.1"
+version       = "0.1.2"
 author        = "Benoit Favre"
-description   = "Building blocks for making async Gemini servers"
+description   = "Building blocks for making async Gemini servers and clients"
 license       = "MIT"
 srcDir        = "src"
 
@@ -10,4 +10,4 @@ srcDir        = "src"
 
 # Dependencies
 
-requires "nim >= 1.2.6"
+requires "nim >= 1.4.2"

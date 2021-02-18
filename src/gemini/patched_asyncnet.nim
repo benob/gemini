@@ -1,6 +1,7 @@
-import openssl, strutils
+import openssl
+import strutils
+
 include asyncnet
-export openssl
 
 # this needs more cleaning
 

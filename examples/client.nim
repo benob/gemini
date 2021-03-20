@@ -17,6 +17,7 @@ let
 try:
   let client = newGeminiClient(certFile=certFile, keyFile=keyFile)
   let response = client.request(url)
+  defer: client.close()
 
   echo "status: " & $response.status
   echo "meta: " & response.meta

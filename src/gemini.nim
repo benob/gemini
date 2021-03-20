@@ -170,7 +170,9 @@ proc body*(response: Response | AsyncResponse): Future[string] {.multisync.} =
     client.bodyStream.setPosition(0)
   return await client.bodyStream.readAll()
 
-proc close*(client: GeminiClient | AsyncGeminiClient) = client.socket.close()
+proc close*(client: GeminiClient | AsyncGeminiClient) = 
+  if not client.socket.isNil():
+    client.socket.close()
 
 type GeminiServerBase[SocketType] = ref object
   socket: SocketType

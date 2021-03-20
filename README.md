@@ -9,13 +9,13 @@ Example
 -------
 
 This library supports both Socket and AsyncSocket servers and clients. The async variants are prefixed with Async.
-Since Gemini requires TLS, you have to provide a certFile and keyFile associated to your domain name.
+Since Gemini requires TLS, you have to provide a certificate and private key associated with your domain name.
 
 Example server:
 ```
 import gemini
 
-proc handle(req: Request) {.async.} =
+proc handle(req: Request) =
   await req.respond(Success, "text/gemini", "# Hello world")
 
 var server = newGeminiServer(certFile = "fullchain.pem", keyFile = "privkey.pem")
@@ -88,7 +88,7 @@ proc serve*(server: AsyncGeminiServer, port = Port(1965), callback: proc (reques
 The callback is given a request which contains the url requested and a certificate if the client provided one.
 
 Note that when address contains a column, ":" the code assumes that you are specifying an IPv6 address (such as :: or ::1 which correspond to 0.0.0.0 and 127.0.0.1). 
-One Linux hosts, IPv4 requests are automatically mapped to IPv6 when listening to "::".
+On Linux hosts, IPv4 requests are automatically mapped to IPv6 when listening to "::".
 If the request url cannot be parsed, the server replies with status 50 INTERNAL ERROR.
 
 Use respond() to send back a response:

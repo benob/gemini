@@ -19,6 +19,7 @@ proc main() {.async.} =
   try:
     let client = newAsyncGeminiClient(certFile=certFile, keyFile=keyFile)
     let response = await client.request(url)
+    defer: client.close()
 
     echo "status: " & $response.status
     echo "meta: " & response.meta
